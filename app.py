@@ -62,11 +62,18 @@ def find_image_in_static(query_name: str):
 
 
 def resolve_report_image(base_name: str):
-    for ext in ("jpg", "jpeg", "png"):
-        filename = f"{base_name}.{ext}"
-        full_path = os.path.join(STATIC_DIR, filename)
-        if os.path.exists(full_path):
-            return filename, full_path
+    candidates = [base_name]
+    if base_name == "homnay":
+        candidates.append("ngay")
+    elif base_name == "ngay":
+        candidates.append("homnay")
+
+    for name in candidates:
+        for ext in ("jpg", "jpeg", "png"):
+            filename = f"{name}.{ext}"
+            full_path = os.path.join(STATIC_DIR, filename)
+            if os.path.exists(full_path):
+                return filename, full_path
     return None, None
 
 

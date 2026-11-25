@@ -253,7 +253,7 @@ def webhook():
                     generate_report_images("thang")
                     send_thang_report(target_id)
 
-                elif cmd in ["/hn", "/homnay", "hom nay", "homnay", "bao cao hom nay", "báo cáo hôm nay"]:
+                elif cmd in ["/hn", "/ngay", "ngay", "bao cao ngay", "báo cáo ngày", "/homnay", "hom nay", "homnay", "bao cao hom nay", "báo cáo hôm nay"]:
                     print(f"🎯 Gửi báo cáo HÔM NAY tới target_id: {target_id}")
                     generate_report_images("homnay")
                     send_homnay_report(target_id)

@@ -1,5 +1,11 @@
 import os
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+VN_TZ = timezone(timedelta(hours=7))
+
+def now_vn():
+    return datetime.now(VN_TZ)
+
 from flask import Flask, request, send_from_directory
 import requests
 
@@ -140,8 +146,8 @@ def send_single_image(target_id: str, filename: str, title: str = ""):
     if not _validate_line_config():
         return
 
-    now_str = datetime.now().strftime("%H:%M %d/%m/%Y")
-    ver = datetime.now().strftime("%Y%m%d%H%M%S")
+    now_str = now_vn().strftime("%H:%M %d/%m/%Y")
+    ver = now_vn().strftime("%Y%m%d%H%M%S")
     img_url = f"{BASE_URL}/static/{filename}?v={ver}"
 
     heading = title or f"ẢNH: {filename}"
@@ -170,8 +176,8 @@ def send_line_report(target_id: str):
         print(f"❌ Không tìm thấy đủ ảnh tháng hoặc hôm nay (.jpg / .png) trong {STATIC_DIR}")
         return
 
-    now_str = datetime.now().strftime("%H:%M %d/%m/%Y")
-    ver = datetime.now().strftime("%Y%m%d%H%M%S")
+    now_str = now_vn().strftime("%H:%M %d/%m/%Y")
+    ver = now_vn().strftime("%Y%m%d%H%M%S")
 
     url_thang = f"{BASE_URL}/static/{thang_file}?v={ver}"
     url_homnay = f"{BASE_URL}/static/{homnay_file}?v={ver}"

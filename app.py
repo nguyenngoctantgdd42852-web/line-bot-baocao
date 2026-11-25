@@ -142,11 +142,45 @@ def send_text_only(target_id: str, text_content: str, label: str = "text"):
     _push_line_messages(target_id, [{"type": "text", "text": text_content}], label=label)
 
 
+
+def extract_dashboard_time_str(filename: str) -> str:
+    """Đọc chuỗi 'dữ liệu lúc HH:MM' từ ảnh báo cáo nếu có, trả về 'HH:MM DD/MM/YYYY'."""
+    try:
+        import pytesseract
+        from PIL import Image
+    except Exception:
+        return ""
+
+    try:
+        img_path = os.path.join(STATIC_DIR, filename)
+        if not os.path.exists(img_path):
+            return ""
+        img = Image.open(img_path)
+        w, h = img.size
+        # Cắt vùng góc trên bên phải/giữa nơi thường hiển thị 'Ngày DD/MM/YYYY · dữ liệu lúc HH:MM'
+        crop_box = (0, 0, w, max(120, int(h * 0.18)))
+        cropped = img.crop(crop_box)
+        ocr_text = pytesseract.image_to_string(cropped, lang="vie+eng")
+        m = re.search(r"dữ\s*liệu\s*lúc\s*(\d{1,2})\s*[:.]\s*(\d{2})", ocr_text, flags=re.IGNORECASE)
+        if m:
+            hh = int(m.group(1))
+            mm = int(m.group(2))
+            if 0 <= hh <= 23 and 0 <= mm <= 59:
+                date_part = now_vn().strftime("%d/%m/%Y")
+                dm = re.search(r"(\d{1,2}/\d{1,2}/\d{4})", ocr_text)
+                if dm:
+                    date_part = dm.group(1)
+                return f"{hh:02d}:{mm:02d} {date_part}"
+    except Exception:
+        pass
+    return ""
+
+
 def send_single_image(target_id: str, filename: str, title: str = ""):
     if not _validate_line_config():
         return
 
-    now_str = now_vn().strftime("%H:%M %d/%m/%Y")
+    now_str = extract_dashboard_time_str(filename) or now_vn().strftime("%H:%M %d/%m/%Y")
     ver = now_vn().strftime("%Y%m%d%H%M%S")
     img_url = f"{BASE_URL}/static/{filename}?v={ver}"
 

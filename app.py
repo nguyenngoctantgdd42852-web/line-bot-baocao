@@ -58,8 +58,8 @@ def normalize_cmd(text: str) -> str:
 def resolve_github_target(raw_text: str):
     """
     Trả về (cmd_clean, repo_path, local_filename, title) nếu khớp lệnh rt...
-    - rtkhuvuc -> rtkhuvuc.png
-    - rt<ten>  -> stores/rt<ten>.png
+- rtkhuvuc -> rtkhuvuc.png
+- rt<ten>  -> stores/rt<ten>.png
     """
     cmd = normalize_cmd(raw_text)
     if not cmd.startswith("rt"):
@@ -120,10 +120,16 @@ def get_latest_drive_input_time_vn() -> str:
         res = (
             service.files()
             .list(
-                q=f"'{DRIVE_INPUT_FOLDER_ID}' in parents and trashed = false",
+                q=(
+                    f"'{DRIVE_INPUT_FOLDER_ID}' in parents "
+                    "and trashed = false "
+                    "and mimeType != 'application/vnd.google-apps.folder'"
+                ),
                 orderBy="modifiedTime desc",
-                pageSize=5,
-                fields="files(id, name, modifiedTime)",
+                pageSize=10,
+                includeItemsFromAllDrives=True,
+                supportsAllDrives=True,
+                fields="files(id, name, mimeType, modifiedTime)",
             )
             .execute()
         )

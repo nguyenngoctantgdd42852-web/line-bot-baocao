@@ -1,13 +1,17 @@
 import os
+import re
+import unicodedata
 from datetime import datetime, timezone, timedelta
 
+import requests
+from flask import Flask, request, send_from_directory
+
 VN_TZ = timezone(timedelta(hours=7))
+
 
 def now_vn():
     return datetime.now(VN_TZ)
 
-from flask import Flask, request, send_from_directory
-import requests
 
 env_path = os.path.join(os.path.dirname(__file__), ".env")
 if os.path.exists(env_path):
@@ -25,11 +29,65 @@ DEFAULT_TOKEN = (
 )
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN", DEFAULT_TOKEN).strip()
 BASE_URL = os.environ.get("BASE_URL", "").strip().rstrip("/")
+GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
 
-# Nếu có cấu hình STATIC_DIR (ví dụ /var/data/static trên Render Disk) thì dùng, không thì dùng ./static
+REPO_OWNER = os.environ.get("GITHUB_REPO_OWNER", "nguyenngoctantgdd42852-web").strip()
+REPO_NAME = os.environ.get("GITHUB_REPO_NAME", "bhx-khu-vuc-dashboard").strip()
+REPO_BRANCH = os.environ.get("GITHUB_REPO_BRANCH", "main").strip()
+
 STATIC_DIR = os.environ.get("STATIC_DIR", os.path.join(os.path.dirname(__file__), "static")).strip()
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 os.makedirs(STATIC_DIR, exist_ok=True)
+
+
+def normalize_cmd(text: str) -> str:
+    s = (text or "").strip().lower().replace("đ", "d")
+    s = unicodedata.normalize("NFD", s)
+    s = "".join(ch for ch in s if unicodedata.category(ch) != "Mn")
+    return re.sub(r"[^a-z0-9]", "", s)
+
+
+def resolve_github_target(raw_text: str):
+    """
+    Trả về (cmd_clean, repo_path, local_filename, title) nếu khớp lệnh rt...
+    - rtkhuvuc -> rtkhuvuc.png
+    - rt<ten>  -> stores/rt<ten>.png
+    """
+    cmd = normalize_cmd(raw_text)
+    if not cmd.startswith("rt"):
+        return None
+
+    if cmd == "rtkhuvuc":
+        return cmd, "rtkhuvuc.png", "rtkhuvuc.png", "BÁO CÁO REALTIME KHU VỰC"
+
+    if len(cmd) > 2:
+        filename = f"{cmd}.png"
+        return cmd, f"stores/{filename}", filename, f"BÁO CÁO REALTIME SIÊU THỊ ({cmd.upper()})"
+
+    return None
+
+
+def sync_dashboard_from_github(repo_path: str, local_filename: str):
+    """Tải ảnh mới nhất từ GitHub repo về STATIC_DIR, trả về local_path nếu thành công."""
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{repo_path}?ref={REPO_BRANCH}"
+    headers = {
+        "Accept": "application/vnd.github.v3.raw",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=25)
+        if resp.status_code == 200 and resp.content:
+            local_path = os.path.join(STATIC_DIR, local_filename)
+            with open(local_path, "wb") as f:
+                f.write(resp.content)
+            return local_path
+        print(f"⚠️ Tải GitHub thất bại ({repo_path}): HTTP {resp.status_code} - {resp.text[:200]}")
+    except Exception as e:
+        print(f"❌ Lỗi kết nối GitHub ({repo_path}): {e}")
+    return None
 
 
 def list_static_images():
@@ -41,65 +99,6 @@ def list_static_images():
         if os.path.isfile(full_path) and name.lower().endswith(IMAGE_EXTS):
             files.append(name)
     return files
-
-
-def find_image_in_static(query_name: str):
-    cleaned = query_name.strip().lstrip("/").lower()
-    if cleaned.startswith("img "):
-        cleaned = cleaned[4:].strip()
-    elif cleaned.startswith("/img "):
-        cleaned = cleaned[5:].strip()
-
-    if not cleaned:
-        return None
-
-    files = list_static_images()
-
-    for fname in files:
-        if fname.lower() == cleaned:
-            return fname
-
-    for fname in files:
-        stem, _ = os.path.splitext(fname.lower())
-        if stem == cleaned:
-            return fname
-
-    return None
-
-
-def resolve_report_image(base_name: str):
-    candidates = [base_name]
-    if base_name == "homnay":
-        candidates.append("ngay")
-    elif base_name == "ngay":
-        candidates.append("homnay")
-
-    for name in candidates:
-        for ext in ("jpg", "jpeg", "png"):
-            filename = f"{name}.{ext}"
-            full_path = os.path.join(STATIC_DIR, filename)
-            if os.path.exists(full_path):
-                return filename, full_path
-    return None, None
-
-
-def generate_report_images(mode: str = "all"):
-    thang_file, thang_path = resolve_report_image("thang")
-    homnay_file, homnay_path = resolve_report_image("homnay")
-
-    if mode == "thang":
-        if not thang_path:
-            print(f"⚠️ Thiếu file thang.jpg hoặc thang.png trong {STATIC_DIR}")
-    elif mode == "homnay":
-        if not homnay_path:
-            print(f"⚠️ Thiếu file homnay.jpg hoặc homnay.png trong {STATIC_DIR}")
-    else:
-        if not thang_path:
-            print(f"⚠️ Thiếu file thang.jpg hoặc thang.png trong {STATIC_DIR}")
-        if not homnay_path:
-            print(f"⚠️ Thiếu file homnay.jpg hoặc homnay.png trong {STATIC_DIR}")
-
-    return thang_path, homnay_path
 
 
 def _validate_line_config() -> bool:
@@ -142,45 +141,11 @@ def send_text_only(target_id: str, text_content: str, label: str = "text"):
     _push_line_messages(target_id, [{"type": "text", "text": text_content}], label=label)
 
 
-
-def extract_dashboard_time_str(filename: str) -> str:
-    """Đọc chuỗi 'dữ liệu lúc HH:MM' từ ảnh báo cáo nếu có, trả về 'HH:MM DD/MM/YYYY'."""
-    try:
-        import pytesseract
-        from PIL import Image
-    except Exception:
-        return ""
-
-    try:
-        img_path = os.path.join(STATIC_DIR, filename)
-        if not os.path.exists(img_path):
-            return ""
-        img = Image.open(img_path)
-        w, h = img.size
-        # Cắt vùng góc trên bên phải/giữa nơi thường hiển thị 'Ngày DD/MM/YYYY · dữ liệu lúc HH:MM'
-        crop_box = (0, 0, w, max(120, int(h * 0.18)))
-        cropped = img.crop(crop_box)
-        ocr_text = pytesseract.image_to_string(cropped, lang="vie+eng")
-        m = re.search(r"dữ\s*liệu\s*lúc\s*(\d{1,2})\s*[:.]\s*(\d{2})", ocr_text, flags=re.IGNORECASE)
-        if m:
-            hh = int(m.group(1))
-            mm = int(m.group(2))
-            if 0 <= hh <= 23 and 0 <= mm <= 59:
-                date_part = now_vn().strftime("%d/%m/%Y")
-                dm = re.search(r"(\d{1,2}/\d{1,2}/\d{4})", ocr_text)
-                if dm:
-                    date_part = dm.group(1)
-                return f"{hh:02d}:{mm:02d} {date_part}"
-    except Exception:
-        pass
-    return ""
-
-
 def send_single_image(target_id: str, filename: str, title: str = ""):
     if not _validate_line_config():
         return
 
-    now_str = extract_dashboard_time_str(filename) or now_vn().strftime("%H:%M %d/%m/%Y")
+    now_str = now_vn().strftime("%H:%M %d/%m/%Y")
     ver = now_vn().strftime("%Y%m%d%H%M%S")
     img_url = f"{BASE_URL}/static/{filename}?v={ver}"
 
@@ -199,63 +164,6 @@ def send_single_image(target_id: str, filename: str, title: str = ""):
     _push_line_messages(target_id, messages, label=filename)
 
 
-def send_line_report(target_id: str):
-    if not _validate_line_config():
-        return
-
-    thang_file, _ = resolve_report_image("thang")
-    homnay_file, _ = resolve_report_image("homnay")
-
-    if not thang_file or not homnay_file:
-        print(f"❌ Không tìm thấy đủ ảnh tháng hoặc hôm nay (.jpg / .png) trong {STATIC_DIR}")
-        return
-
-    now_str = now_vn().strftime("%H:%M %d/%m/%Y")
-    ver = now_vn().strftime("%Y%m%d%H%M%S")
-
-    url_thang = f"{BASE_URL}/static/{thang_file}?v={ver}"
-    url_homnay = f"{BASE_URL}/static/{homnay_file}?v={ver}"
-
-    text_content = (
-        f"BÁO CÁO DOANH THU KHU VỰC\n"
-        f"Cập nhật lúc: {now_str}\n\n"
-        f"1. Lũy kế & dự kiến tháng:\n{url_thang}\n\n"
-        f"2. Doanh thu hôm nay:\n{url_homnay}"
-    )
-
-    messages = [
-        {"type": "text", "text": text_content},
-        {
-            "type": "image",
-            "originalContentUrl": url_thang,
-            "previewImageUrl": url_thang,
-        },
-        {
-            "type": "image",
-            "originalContentUrl": url_homnay,
-            "previewImageUrl": url_homnay,
-        },
-    ]
-
-    _push_line_messages(target_id, messages, label="all")
-
-
-def send_thang_report(target_id: str):
-    thang_file, _ = resolve_report_image("thang")
-    if not thang_file:
-        print(f"❌ Không tìm thấy ảnh tháng (.jpg / .png) trong {STATIC_DIR}")
-        return
-    send_single_image(target_id, thang_file, title="BÁO CÁO LŨY KẾ & DỰ KIẾN THÁNG")
-
-
-def send_homnay_report(target_id: str):
-    homnay_file, _ = resolve_report_image("homnay")
-    if not homnay_file:
-        print(f"❌ Không tìm thấy ảnh hôm nay (.jpg / .png) trong {STATIC_DIR}")
-        return
-    send_single_image(target_id, homnay_file, title="BÁO CÁO DOANH THU HÔM NAY")
-
-
 @app.route("/", methods=["GET"])
 def home():
     return "Bot is running", 200
@@ -263,7 +171,9 @@ def home():
 
 @app.route("/static/<path:filename>")
 def serve_static(filename):
-    return send_from_directory(STATIC_DIR, filename)
+    resp = send_from_directory(STATIC_DIR, filename)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
 
 
 @app.route("/webhook", methods=["POST"])
@@ -277,7 +187,6 @@ def webhook():
             msg = event.get("message", {})
             if msg.get("type") == "text":
                 raw_text = (msg.get("text") or "").strip()
-                cmd = raw_text.lower()
                 print(f"💬 Tin nhắn nhận được: '{raw_text}'")
 
                 source = event.get("source", {})
@@ -290,34 +199,34 @@ def webhook():
                 if not target_id:
                     continue
 
-                if cmd in ["/bc", "baocao", "bao cao", "báo cáo"]:
-                    print(f"🎯 Gửi báo cáo đầy đủ tới target_id: {target_id}")
-                    generate_report_images("all")
-                    send_line_report(target_id)
+                rt_target = resolve_github_target(raw_text)
+                if rt_target:
+                    cmd_clean, repo_path, local_filename, title = rt_target
+                    print(f"🎯 Đồng bộ '{repo_path}' cho lệnh '{raw_text}' -> {target_id}")
+                    local_path = sync_dashboard_from_github(repo_path, local_filename)
+                    if local_path and os.path.exists(local_path):
+                        send_single_image(target_id, local_filename, title=title)
+                    else:
+                        send_text_only(
+                            target_id,
+                            f"⚠️ Không tìm thấy hoặc không tải được ảnh '{repo_path}' từ GitHub.",
+                            label="not_found",
+                        )
 
-                elif cmd in ["/thang", "thang", "bao cao thang", "báo cáo tháng"]:
-                    print(f"🎯 Gửi báo cáo THÁNG tới target_id: {target_id}")
-                    generate_report_images("thang")
-                    send_thang_report(target_id)
-
-                elif cmd in ["/hn", "/ngay", "ngay", "bao cao ngay", "báo cáo ngày", "/homnay", "hom nay", "homnay", "bao cao hom nay", "báo cáo hôm nay"]:
-                    print(f"🎯 Gửi báo cáo HÔM NAY tới target_id: {target_id}")
-                    generate_report_images("homnay")
-                    send_homnay_report(target_id)
-
-                elif cmd in ["/ds", "/list", "ds", "danh sach anh", "danh sách ảnh"]:
+                elif normalize_cmd(raw_text) in ["ds", "list", "danhsachanh"]:
                     files = list_static_images()
                     if files:
-                        ds_text = "📂 Danh sách ảnh hiện có:\n" + "\n".join(f"- {f}" for f in files)
+                        ds_text = "📂 Danh sách ảnh đã tải về:\n" + "\n".join(f"- {f}" for f in files)
                     else:
-                        ds_text = "📂 Hiện chưa có file ảnh nào."
+                        ds_text = "📂 Hiện chưa có file ảnh nào trong bộ nhớ đệm."
                     send_text_only(target_id, ds_text, label="list")
 
                 else:
-                    matched_file = find_image_in_static(cmd)
-                    if matched_file:
-                        print(f"🖼️ Tìm thấy ảnh '{matched_file}' khớp lệnh '{raw_text}'")
-                        send_single_image(target_id, matched_file)
+                    send_text_only(
+                        target_id,
+                        "Gõ 'rtkhuvuc' để xem khu vực hoặc 'rt<tensiêu thị>' (vd: rtninhhiep, rt131d24).",
+                        label="help",
+                    )
 
     return "OK", 200
 

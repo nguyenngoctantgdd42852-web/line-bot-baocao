@@ -145,12 +145,11 @@ def send_single_image(target_id: str, filename: str, title: str = ""):
     if not _validate_line_config():
         return
 
-    now_str = now_vn().strftime("%H:%M %d/%m/%Y")
     ver = now_vn().strftime("%Y%m%d%H%M%S")
     img_url = f"{BASE_URL}/static/{filename}?v={ver}"
 
     heading = title or f"ẢNH: {filename}"
-    text_content = f"{heading}\nCập nhật lúc: {now_str}\n\n{img_url}"
+    text_content = f"{heading}\n(Xem mốc giờ realtime trực tiếp trên ảnh)\n\n{img_url}"
 
     messages = [
         {"type": "text", "text": text_content},

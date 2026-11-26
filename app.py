@@ -38,13 +38,17 @@ REPO_OWNER = os.environ.get("GITHUB_REPO_OWNER", "nguyenngoctantgdd42852-web").s
 REPO_NAME = os.environ.get("GITHUB_REPO_NAME", "bhx-khu-vuc-dashboard").strip()
 REPO_BRANCH = os.environ.get("GITHUB_REPO_BRANCH", "main").strip()
 
-# Đã sửa chữ I hoa: 1yI_aUp9tLVnzw--2R6EqbYuUeCs5Vg_8
 DRIVE_INPUT_FOLDER_ID = "1yI_aUp9tLVnzw--2R6EqbYuUeCs5Vg_8"
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 
 STATIC_DIR = os.environ.get("STATIC_DIR", os.path.join(os.path.dirname(__file__), "static")).strip()
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 os.makedirs(STATIC_DIR, exist_ok=True)
+
+# Ánh xạ phần tên sau "rt" -> Tên hiển thị đẹp (không ngoặc)
+STORE_NAMES = {
+    "ninhhiep": "NINH HIỆP",
+}
 
 
 def normalize_cmd(text: str) -> str:
@@ -57,8 +61,8 @@ def normalize_cmd(text: str) -> str:
 def resolve_github_target(raw_text: str):
     """
     Trả về (cmd_clean, repo_path, local_filename, title) nếu khớp lệnh rt...
-- rtkhuvuc -> rtkhuvuc.png
-- rt<ten>  -> stores/rt<ten>.png
+    - rtkhuvuc -> rtkhuvuc.png
+    - rt<ten>  -> stores/rt<ten>.png
     """
     cmd = normalize_cmd(raw_text)
     if not cmd.startswith("rt"):
@@ -68,8 +72,10 @@ def resolve_github_target(raw_text: str):
         return cmd, "rtkhuvuc.png", "rtkhuvuc.png", "BÁO CÁO REALTIME KHU VỰC"
 
     if len(cmd) > 2:
+        store_key = cmd[2:]
+        store_label = STORE_NAMES.get(store_key, store_key.upper())
         filename = f"{cmd}.png"
-        return cmd, f"stores/{filename}", filename, f"BÁO CÁO REALTIME SIÊU THỊ ({cmd.upper()})"
+        return cmd, f"stores/{filename}", filename, f"BÁO CÁO REALTIME SIÊU THỊ {store_label}"
 
     return None
 

@@ -45,9 +45,35 @@ STATIC_DIR = os.environ.get("STATIC_DIR", os.path.join(os.path.dirname(__file__)
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
-# Ánh xạ phần tên sau "rt" -> Tên hiển thị đẹp (không ngoặc)
+# Ánh xạ tên không dấu (chuẩn hóa) -> TÊN VIẾT TẮT (27 siêu thị)
 STORE_NAMES = {
+    "ngogiakham": "NGÔ GIA KHẢM",
+    "vinhhai": "VĨNH HẢI",
+    "171d24": "171 Đ2/4",
+    "tubong": "TU BÔNG",
+    "vanthang": "VẠN THẮNG",
+    "lacan": "LẠC AN",
+    "thongnhat": "THỐNG NHẤT",
+    "ninhthuy": "NINH THỦY",
+    "24ninhhoa": "2/4 NINH HOA",
+    "chobau": "CHỢ BẦU",
+    "nguyenhue": "NGUYỄN HUỆ",
+    "binhthanh": "BÌNH THÀNH",
+    "vinhluong": "VĨNH LƯƠNG",
+    "ninhphung": "NINH PHỤNG",
+    "ninhsim": "NINH SIM",
     "ninhhiep": "NINH HIỆP",
+    "ninhdiem": "NINH DIÊM",
+    "113d24": "113 Đ2/4",
+    "vanninh": "VẠN NINH",
+    "doclet": "DỐC LẾT",
+    "giamy": "GIA MỸ",
+    "nguyenxien": "NGUYỄN XIỂN",
+    "thachthanh": "THẠCH THÀNH",
+    "tranquycap": "TRẦN QUÝ CÁP",
+    "maixuanthuong": "MAI XUÂN THƯỞNG",
+    "duonghienquyen": "DƯƠNG HIẾN QUYỀN",
+    "288d24": "288 Đ2/4",
 }
 
 
@@ -61,8 +87,8 @@ def normalize_cmd(text: str) -> str:
 def resolve_github_target(raw_text: str):
     """
     Trả về (cmd_clean, repo_path, local_filename, title) nếu khớp lệnh rt...
-    - rtkhuvuc -> rtkhuvuc.png
-    - rt<ten>  -> stores/rt<ten>.png
+- rtkhuvuc -> rtkhuvuc.png
+- rt<ten>  -> stores/rt<ten>.png
     """
     cmd = normalize_cmd(raw_text)
     if not cmd.startswith("rt"):
@@ -72,7 +98,7 @@ def resolve_github_target(raw_text: str):
         return cmd, "rtkhuvuc.png", "rtkhuvuc.png", "BÁO CÁO REALTIME KHU VỰC"
 
     if len(cmd) > 2:
-        store_key = cmd[2:]
+        store_key = normalize_cmd(cmd[2:])
         store_label = STORE_NAMES.get(store_key, store_key.upper())
         filename = f"{cmd}.png"
         return cmd, f"stores/{filename}", filename, f"BÁO CÁO REALTIME SIÊU THỊ {store_label}"

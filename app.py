@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import unicodedata
@@ -5,6 +6,8 @@ from datetime import datetime, timezone, timedelta
 
 import requests
 from flask import Flask, request, send_from_directory
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 VN_TZ = timezone(timedelta(hours=7))
 
@@ -34,6 +37,11 @@ GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
 REPO_OWNER = os.environ.get("GITHUB_REPO_OWNER", "nguyenngoctantgdd42852-web").strip()
 REPO_NAME = os.environ.get("GITHUB_REPO_NAME", "bhx-khu-vuc-dashboard").strip()
 REPO_BRANCH = os.environ.get("GITHUB_REPO_BRANCH", "main").strip()
+
+DRIVE_INPUT_FOLDER_ID = os.environ.get(
+    "DRIVE_INPUT_FOLDER_ID", "1yL_aUp9tLVnzw--2R6EqbYuUeCs5Vg_8"
+).strip()
+GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 
 STATIC_DIR = os.environ.get("STATIC_DIR", os.path.join(os.path.dirname(__file__), "static")).strip()
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
@@ -88,6 +96,56 @@ def sync_dashboard_from_github(repo_path: str, local_filename: str):
     except Exception as e:
         print(f"❌ Lỗi kết nối GitHub ({repo_path}): {e}")
     return None
+
+
+def get_latest_drive_input_time_vn() -> str:
+    """Lấy thời gian sửa đổi mới nhất (HH:MM DD/MM/YYYY, UTC+7) của file trong folder input trên Drive."""
+    if not GOOGLE_SERVICE_ACCOUNT_JSON or not DRIVE_INPUT_FOLDER_ID:
+        print("ℹ️ Chưa cấu hình GOOGLE_SERVICE_ACCOUNT_JSON hoặc DRIVE_INPUT_FOLDER_ID")
+        return ""
+
+    try:
+        raw_json = GOOGLE_SERVICE_ACCOUNT_JSON.strip()
+        if (raw_json.startswith("'") and raw_json.endswith("'")) or (
+            raw_json.startswith('"') and raw_json.endswith('"')
+        ):
+            raw_json = raw_json[1:-1]
+
+        info = json.loads(raw_json)
+        creds = service_account.Credentials.from_service_account_info(
+            info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
+        )
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+        res = (
+            service.files()
+            .list(
+                q=f"'{DRIVE_INPUT_FOLDER_ID}' in parents and trashed = false",
+                orderBy="modifiedTime desc",
+                pageSize=5,
+                fields="files(id, name, modifiedTime)",
+            )
+            .execute()
+        )
+
+        files = res.get("files", [])
+        if not files:
+            print("⚠️ Folder input trên Google Drive không có file nào")
+            return ""
+
+        latest_file = files[0]
+        mod_iso = latest_file.get("modifiedTime", "")
+        if not mod_iso:
+            return ""
+
+        dt_utc = datetime.fromisoformat(mod_iso.replace("Z", "+00:00"))
+        dt_vn = dt_utc.astimezone(VN_TZ)
+        formatted = dt_vn.strftime("%H:%M %d/%m/%Y")
+        print(f"📁 Drive input mới nhất: {latest_file.get('name')} -> {formatted}")
+        return formatted
+    except Exception as e:
+        print(f"⚠️ Lỗi đọc Google Drive input: {e}")
+        return ""
 
 
 def list_static_images():
@@ -145,11 +203,15 @@ def send_single_image(target_id: str, filename: str, title: str = ""):
     if not _validate_line_config():
         return
 
+    input_time_str = get_latest_drive_input_time_vn()
     ver = now_vn().strftime("%Y%m%d%H%M%S")
     img_url = f"{BASE_URL}/static/{filename}?v={ver}"
 
     heading = title or f"ẢNH: {filename}"
-    text_content = f"{heading}\n(Xem mốc giờ realtime trực tiếp trên ảnh)\n\n{img_url}"
+    if input_time_str:
+        text_content = f"{heading}\nCập nhật input lúc: {input_time_str}\n\n{img_url}"
+    else:
+        text_content = f"{heading}\n(Xem mốc giờ realtime trực tiếp trên ảnh)\n\n{img_url}"
 
     messages = [
         {"type": "text", "text": text_content},

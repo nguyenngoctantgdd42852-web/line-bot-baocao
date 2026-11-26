@@ -120,14 +120,21 @@ def get_latest_drive_input_time_vn() -> str:
         )
         service = build("drive", "v3", credentials=creds, cache_discovery=False)
 
+        folder_meta = (
+            service.files()
+            .get(
+                fileId=DRIVE_INPUT_FOLDER_ID,
+                fields="id, name, mimeType",
+                supportsAllDrives=True,
+            )
+            .execute()
+        )
+        print(f"🔍 Debug Drive: folder_meta={folder_meta}")
+
         res = (
             service.files()
             .list(
-                q=(
-                    f"'{DRIVE_INPUT_FOLDER_ID}' in parents "
-                    "and trashed = false "
-                    "and mimeType != 'application/vnd.google-apps.folder'"
-                ),
+                q=f"'{DRIVE_INPUT_FOLDER_ID}' in parents and trashed = false",
                 orderBy="modifiedTime desc",
                 pageSize=50,
                 corpora="allDrives",
@@ -138,8 +145,13 @@ def get_latest_drive_input_time_vn() -> str:
             .execute()
         )
 
-        files = res.get("files", [])
-        print(f"🔍 Debug Drive: tìm thấy {len(files)} file -> {[f.get('name') for f in files]}")
+        items = res.get("files", [])
+        print(f"🔍 Debug Drive: tìm thấy {len(items)} item -> {items}")
+
+        files = [
+            f for f in items
+            if f.get("mimeType") != "application/vnd.google-apps.folder"
+        ]
         if not files:
             print("⚠️ Folder input trên Google Drive không có file nào")
             return ""

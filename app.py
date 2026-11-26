@@ -100,6 +100,7 @@ def sync_dashboard_from_github(repo_path: str, local_filename: str):
 
 def get_latest_drive_input_time_vn() -> str:
     """Lấy thời gian sửa đổi mới nhất (HH:MM DD/MM/YYYY, UTC+7) của file trong folder input trên Drive."""
+    print(f"🔍 Debug Drive: DRIVE_INPUT_FOLDER_ID={DRIVE_INPUT_FOLDER_ID!r} | has_json={bool(GOOGLE_SERVICE_ACCOUNT_JSON)}")
     if not GOOGLE_SERVICE_ACCOUNT_JSON or not DRIVE_INPUT_FOLDER_ID:
         print("ℹ️ Chưa cấu hình GOOGLE_SERVICE_ACCOUNT_JSON hoặc DRIVE_INPUT_FOLDER_ID")
         return ""
@@ -112,6 +113,8 @@ def get_latest_drive_input_time_vn() -> str:
             raw_json = raw_json[1:-1]
 
         info = json.loads(raw_json)
+        print(f"🔍 Debug Drive: client_email={info.get('client_email')!r}")
+
         creds = service_account.Credentials.from_service_account_info(
             info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
         )
@@ -126,7 +129,8 @@ def get_latest_drive_input_time_vn() -> str:
                     "and mimeType != 'application/vnd.google-apps.folder'"
                 ),
                 orderBy="modifiedTime desc",
-                pageSize=10,
+                pageSize=50,
+                corpora="allDrives",
                 includeItemsFromAllDrives=True,
                 supportsAllDrives=True,
                 fields="files(id, name, mimeType, modifiedTime)",
@@ -135,6 +139,7 @@ def get_latest_drive_input_time_vn() -> str:
         )
 
         files = res.get("files", [])
+        print(f"🔍 Debug Drive: tìm thấy {len(files)} file -> {[f.get('name') for f in files]}")
         if not files:
             print("⚠️ Folder input trên Google Drive không có file nào")
             return ""

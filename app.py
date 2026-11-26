@@ -294,13 +294,6 @@ def webhook():
                         ds_text = "📂 Hiện chưa có file ảnh nào trong bộ nhớ đệm."
                     send_text_only(target_id, ds_text, label="list")
 
-                else:
-                    send_text_only(
-                        target_id,
-                        "Gõ 'rtkhuvuc' để xem khu vực hoặc 'rt<tensiêu thị>' (vd: rtninhhiep, rt131d24).",
-                        label="help",
-                    )
-
     return "OK", 200
 
 

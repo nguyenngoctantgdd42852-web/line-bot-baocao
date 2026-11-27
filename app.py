@@ -87,8 +87,8 @@ def normalize_cmd(text: str) -> str:
 def resolve_github_target(raw_text: str):
     """
     Trả về (cmd_clean, repo_path, local_filename, title) nếu khớp lệnh rt...
-- rtkhuvuc -> rtkhuvuc.png
-- rt<ten>  -> stores/rt<ten>.png
+    - rtkhuvuc -> rtkhuvuc.png
+    - rt<ten>  -> stores/rt<ten>.png
     """
     cmd = normalize_cmd(raw_text)
     if not cmd.startswith("rt"):
@@ -127,6 +127,83 @@ def sync_dashboard_from_github(repo_path: str, local_filename: str):
     except Exception as e:
         print(f"❌ Lỗi kết nối GitHub ({repo_path}): {e}")
     return None
+
+
+def fetch_github_json(repo_path: str):
+    """Tải file JSON tóm tắt từ GitHub repo; trả về None nếu chưa có hoặc lỗi."""
+    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{repo_path}?ref={REPO_BRANCH}"
+    headers = {
+        "Accept": "application/vnd.github.v3.raw",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+    if GITHUB_TOKEN:
+        headers["Authorization"] = f"Bearer {GITHUB_TOKEN}"
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        if resp.status_code == 200 and resp.content:
+            return resp.json()
+        print(f"ℹ️ Không tìm thấy hoặc không đọc được JSON ({repo_path}): HTTP {resp.status_code}")
+    except Exception as e:
+        print(f"⚠️ Lỗi tải JSON ({repo_path}): {e}")
+    return None
+
+
+def get_store_summary_json(cmd_clean: str):
+    """Lấy JSON tóm tắt của siêu thị theo cmd_clean (ví dụ rtninhdiem hoặc ninhdiem)."""
+    candidates = [f"stores/summary_{cmd_clean}.json"]
+    if cmd_clean.startswith("rt") and len(cmd_clean) > 2:
+        candidates.append(f"stores/summary_{cmd_clean[2:]}.json")
+    else:
+        candidates.append(f"stores/summary_rt{cmd_clean}.json")
+
+    for path in candidates:
+        data = fetch_github_json(path)
+        if isinstance(data, dict) and data:
+            return data
+    return None
+
+
+def build_analysis_message(title: str, data: dict) -> str:
+    """Chuyển dữ liệu JSON tóm tắt thành tin nhắn phân tích ngắn gọn, dễ đọc trên LINE."""
+    if not isinstance(data, dict) or not data:
+        return ""
+
+    lines = [f"📊 PHÂN TÍCH DOANH THU - {title}"]
+
+    if data.get("dt_ngay") or data.get("base") or data.get("ht_pct"):
+        lines.append(
+            f"• DT ngày: {data.get('dt_ngay', '-')} | Base: {data.get('base', '-')} ({data.get('ht_pct', '-')})"
+        )
+
+    if data.get("chenh_lech"):
+        lines.append(f"• Chênh lệch Base: {data['chenh_lech']}")
+
+    if data.get("dat_base"):
+        lines.append(f"• Siêu thị đạt Base: {data['dat_base']}")
+
+    if data.get("so_bill"):
+        lines.append(f"• Số bill: {data['so_bill']}")
+
+    if data.get("kenh"):
+        lines.append(f"• Kênh bán: {data['kenh']}")
+
+    if data.get("nganh_hang"):
+        lines.append(f"• Ngành hàng: {data['nganh_hang']}")
+
+    if data.get("top_sieu_thi"):
+        lines.append(f"• Top đạt cao: {data['top_sieu_thi']}")
+
+    if data.get("can_day_sieu_thi"):
+        lines.append(f"• Cần đẩy thêm: {data['can_day_sieu_thi']}")
+
+    if data.get("top_nhom"):
+        lines.append(f"• Ngành/nhóm nổi bật: {data['top_nhom']}")
+
+    if data.get("nhan_dinh"):
+        lines.append(f"💡 Nhận định: {data['nhan_dinh']}")
+
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 def get_latest_drive_input_time_vn() -> str:
@@ -237,7 +314,7 @@ def send_text_only(target_id: str, text_content: str, label: str = "text"):
     _push_line_messages(target_id, [{"type": "text", "text": text_content}], label=label)
 
 
-def send_single_image(target_id: str, filename: str, title: str = ""):
+def send_single_image(target_id: str, filename: str, title: str = "", analysis_text: str = ""):
     if not _validate_line_config():
         return
 
@@ -259,6 +336,9 @@ def send_single_image(target_id: str, filename: str, title: str = ""):
             "previewImageUrl": img_url,
         },
     ]
+
+    if analysis_text:
+        messages.append({"type": "text", "text": analysis_text[:4900]})
 
     _push_line_messages(target_id, messages, label=filename)
 
@@ -304,7 +384,18 @@ def webhook():
                     print(f"🎯 Đồng bộ '{repo_path}' cho lệnh '{raw_text}' -> {target_id}")
                     local_path = sync_dashboard_from_github(repo_path, local_filename)
                     if local_path and os.path.exists(local_path):
-                        send_single_image(target_id, local_filename, title=title)
+                        summary_data = (
+                            fetch_github_json("summary.json")
+                            if cmd_clean == "rtkhuvuc"
+                            else get_store_summary_json(cmd_clean)
+                        )
+                        analysis_text = build_analysis_message(title, summary_data)
+                        send_single_image(
+                            target_id,
+                            local_filename,
+                            title=title,
+                            analysis_text=analysis_text,
+                        )
                     else:
                         send_text_only(
                             target_id,

@@ -46,9 +46,8 @@ STATIC_DIR = os.environ.get("STATIC_DIR", os.path.join(os.path.dirname(__file__)
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 os.makedirs(STATIC_DIR, exist_ok=True)
 
-# Cấu hình chống spam / gọi trùng (giây), lưu ra file để dùng chung giữa các worker
-CMD_COOLDOWN_SECONDS = int(os.environ.get("CMD_COOLDOWN_SECONDS", "180"))   # 3 phút/lệnh/nhóm
-USER_COOLDOWN_SECONDS = int(os.environ.get("USER_COOLDOWN_SECONDS", "30"))  # 30 giây/người
+# Chặn đúng lệnh trùng trong 3 phút (180 giây), sau 3 phút tự gỡ chặn
+CMD_COOLDOWN_SECONDS = int(os.environ.get("CMD_COOLDOWN_SECONDS", "180"))
 COOLDOWN_FILE = os.path.join(STATIC_DIR, "cooldown_state.json")
 
 # Ánh xạ tên không dấu (chuẩn hóa) -> TÊN VIẾT TẮT (27 siêu thị)
@@ -91,11 +90,6 @@ def normalize_cmd(text: str) -> str:
 
 
 def resolve_github_target(raw_text: str):
-    """
-    Trả về (cmd_clean, repo_path, local_filename, title) nếu khớp lệnh rt...
-    - rtkhuvuc -> rtkhuvuc.png
-    - rt<ten>  -> stores/rt<ten>.png
-    """
     cmd = normalize_cmd(raw_text)
     if not cmd.startswith("rt"):
         return None
@@ -113,7 +107,6 @@ def resolve_github_target(raw_text: str):
 
 
 def sync_dashboard_from_github(repo_path: str, local_filename: str):
-    """Tải ảnh mới nhất từ GitHub repo về STATIC_DIR, trả về local_path nếu thành công."""
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{repo_path}?ref={REPO_BRANCH}"
     headers = {
         "Accept": "application/vnd.github.v3.raw",
@@ -136,7 +129,6 @@ def sync_dashboard_from_github(repo_path: str, local_filename: str):
 
 
 def fetch_github_json(repo_path: str):
-    """Tải file JSON tóm tắt từ GitHub repo; trả về None nếu chưa có hoặc lỗi."""
     url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{repo_path}?ref={REPO_BRANCH}"
     headers = {
         "Accept": "application/vnd.github.v3.raw",
@@ -156,7 +148,6 @@ def fetch_github_json(repo_path: str):
 
 
 def get_store_summary_json(cmd_clean: str):
-    """Lấy JSON tóm tắt của siêu thị theo cmd_clean (ví dụ rtninhdiem hoặc ninhdiem)."""
     candidates = [f"stores/summary_{cmd_clean}.json"]
     if cmd_clean.startswith("rt") and len(cmd_clean) > 2:
         candidates.append(f"stores/summary_{cmd_clean[2:]}.json")
@@ -171,7 +162,6 @@ def get_store_summary_json(cmd_clean: str):
 
 
 def build_analysis_message(title: str, data: dict) -> str:
-    """Chuyển dữ liệu JSON tóm tắt thành tin nhắn phân tích ngắn gọn, dễ đọc trên LINE."""
     if not isinstance(data, dict) or not data:
         return ""
 
@@ -213,7 +203,6 @@ def build_analysis_message(title: str, data: dict) -> str:
 
 
 def get_latest_drive_input_time_vn() -> str:
-    """Lấy thời gian sửa đổi mới nhất (HH:MM DD/MM/YYYY, UTC+7) của file trong folder input trên Drive."""
     if not GOOGLE_SERVICE_ACCOUNT_JSON or not DRIVE_INPUT_FOLDER_ID:
         return ""
 
@@ -290,7 +279,6 @@ def _validate_line_config(require_base_url: bool = True) -> bool:
 
 
 def _send_line_messages(target_id: str, messages: list, reply_token: str = "", label: str = ""):
-    """Ưu tiên dùng Reply API (tiết kiệm quota), fallback sang Push API nếu cần."""
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
@@ -350,7 +338,6 @@ def send_single_image(
     else:
         text_content = f"{heading}\n(Xem mốc giờ realtime trực tiếp trên ảnh)\n\n{img_url}"
 
-    # Gộp phần phân tích vào chung tin nhắn đầu tiên
     if analysis_text:
         text_content = f"{text_content}\n\n{analysis_text}"
 
@@ -366,59 +353,54 @@ def send_single_image(
     _send_line_messages(target_id, messages, reply_token=reply_token, label=filename)
 
 
-def _load_cooldown_state() -> dict:
+def _load_cmd_cooldowns() -> dict:
     if not os.path.exists(COOLDOWN_FILE):
-        return {"cmd": {}, "user": {}}
+        return {}
     try:
         with open(COOLDOWN_FILE, "r", encoding="utf-8") as f:
             data = json.load(f)
             if isinstance(data, dict):
-                return {
-                    "cmd": data.get("cmd") if isinstance(data.get("cmd"), dict) else {},
-                    "user": data.get("user") if isinstance(data.get("user"), dict) else {},
-                }
+                if isinstance(data.get("cmd"), dict):
+                    return data["cmd"]
+                return {k: v for k, v in data.items() if isinstance(v, (int, float))}
     except Exception as e:
         print(f"⚠️ Lỗi đọc cooldown_state.json: {e}")
-    return {"cmd": {}, "user": {}}
+    return {}
 
 
-def _save_cooldown_state(state: dict):
+def _save_cmd_cooldowns(cmd_state: dict):
     try:
         with open(COOLDOWN_FILE, "w", encoding="utf-8") as f:
-            json.dump(state, f)
+            json.dump({"cmd": cmd_state}, f)
     except Exception as e:
         print(f"⚠️ Lỗi ghi cooldown_state.json: {e}")
 
 
-def check_and_mark_cooldown(target_id: str, user_id: str, cmd_clean: str) -> bool:
-    """Lưu trạng thái ra file để dùng chung giữa các worker/lần restart."""
+def check_and_mark_cooldown(target_id: str, cmd_clean: str) -> bool:
+    """
+    1. Trong CMD_COOLDOWN_SECONDS (180s = 3 phút): gọi lại đúng lệnh trùng tại cùng target_id -> trả về False (không phản hồi).
+    2. Sau 180s: gỡ bỏ trạng thái chặn của lệnh đó và đánh dấu lượt gọi mới -> trả về True (phản hồi lại).
+    """
     now_ts = time.time()
-    state = _load_cooldown_state()
+    cmd_state = _load_cmd_cooldowns()
+
+    # Dọn các lệnh đã hết hạn quá CMD_COOLDOWN_SECONDS để gỡ chặn sạch sẽ
+    active_state = {
+        k: float(ts)
+        for k, ts in cmd_state.items()
+        if (now_ts - float(ts or 0)) < CMD_COOLDOWN_SECONDS
+    }
 
     cmd_key = f"{target_id}::{cmd_clean}"
-    last_cmd_ts = float(state["cmd"].get(cmd_key, 0) or 0)
-    if now_ts - last_cmd_ts < CMD_COOLDOWN_SECONDS:
-        remain = int(CMD_COOLDOWN_SECONDS - (now_ts - last_cmd_ts))
-        print(f"⏳ Bỏ qua lệnh trùng '{cmd_clean}' tại {target_id} (còn {remain}s)")
+    if cmd_key in active_state:
+        remain = int(CMD_COOLDOWN_SECONDS - (now_ts - active_state[cmd_key]))
+        print(f"⏳ Đang chặn lệnh trùng '{cmd_clean}' tại {target_id} (còn {max(1, remain)}s)")
+        _save_cmd_cooldowns(active_state)
         return False
 
-    if user_id:
-        last_u_ts = float(state["user"].get(user_id, 0) or 0)
-        if now_ts - last_u_ts < USER_COOLDOWN_SECONDS:
-            remain = int(USER_COOLDOWN_SECONDS - (now_ts - last_u_ts))
-            print(f"⏳ Bỏ qua user '{user_id}' gọi quá nhanh (còn {remain}s)")
-            return False
-
-    state["cmd"][cmd_key] = now_ts
-    if user_id:
-        state["user"][user_id] = now_ts
-
-    # Dọn bớt các mục cũ quá 24 giờ cho file luôn gọn
-    cutoff = now_ts - 86400
-    state["cmd"] = {k: v for k, v in state["cmd"].items() if float(v or 0) >= cutoff}
-    state["user"] = {k: v for k, v in state["user"].items() if float(v or 0) >= cutoff}
-
-    _save_cooldown_state(state)
+    # Đã hết 3 phút (hoặc chưa từng gọi): gỡ chặn cũ và ghi nhận lượt gọi mới
+    active_state[cmd_key] = now_ts
+    _save_cmd_cooldowns(active_state)
     return True
 
 
@@ -465,7 +447,7 @@ def webhook():
         if rt_target:
             cmd_clean, repo_path, local_filename, title = rt_target
 
-            if not check_and_mark_cooldown(target_id, user_id, cmd_clean):
+            if not check_and_mark_cooldown(target_id, cmd_clean):
                 continue
 
             print(f"🎯 Đồng bộ '{repo_path}' cho lệnh '{raw_text}' -> {target_id}")
@@ -493,7 +475,7 @@ def webhook():
                 )
 
         elif normalize_cmd(raw_text) in ["ds", "list", "danhsachanh"]:
-            if not check_and_mark_cooldown(target_id, user_id, "ds"):
+            if not check_and_mark_cooldown(target_id, "ds"):
                 continue
             files = list_static_images()
             if files:

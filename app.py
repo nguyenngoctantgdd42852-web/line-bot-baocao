@@ -204,4 +204,308 @@ def build_analysis_message(title: str, data: dict) -> str:
         lines.append(f"• Cần đẩy thêm: {data['can_day_sieu_thi']}")
 
     if data.get("top_nhom"):
-        lines.append(f"• Ngành/nh
+        lines.append(f"• Ngành/nhóm nổi bật: {data['top_nhom']}")
+
+    if data.get("nhan_dinh"):
+        lines.append(f"💡 Nhận định: {data['nhan_dinh']}")
+
+    return "\n".join(lines) if len(lines) > 1 else ""
+
+
+def get_latest_drive_input_time_vn() -> str:
+    """Lấy thời gian sửa đổi mới nhất (HH:MM DD/MM/YYYY, UTC+7) của file trong folder input trên Drive."""
+    if not GOOGLE_SERVICE_ACCOUNT_JSON or not DRIVE_INPUT_FOLDER_ID:
+        return ""
+
+    try:
+        raw_json = GOOGLE_SERVICE_ACCOUNT_JSON.strip()
+        if (raw_json.startswith("'") and raw_json.endswith("'")) or (
+            raw_json.startswith('"') and raw_json.endswith('"')
+        ):
+            raw_json = raw_json[1:-1]
+
+        info = json.loads(raw_json)
+        creds = service_account.Credentials.from_service_account_info(
+            info, scopes=["https://www.googleapis.com/auth/drive.readonly"]
+        )
+        service = build("drive", "v3", credentials=creds, cache_discovery=False)
+
+        res = (
+            service.files()
+            .list(
+                q=(
+                    f"'{DRIVE_INPUT_FOLDER_ID}' in parents "
+                    "and trashed = false "
+                    "and mimeType != 'application/vnd.google-apps.folder'"
+                ),
+                orderBy="modifiedTime desc",
+                pageSize=20,
+                corpora="allDrives",
+                includeItemsFromAllDrives=True,
+                supportsAllDrives=True,
+                fields="files(id, name, mimeType, modifiedTime)",
+            )
+            .execute()
+        )
+
+        files = res.get("files", [])
+        if not files:
+            return ""
+
+        latest_file = files[0]
+        mod_iso = latest_file.get("modifiedTime", "")
+        if not mod_iso:
+            return ""
+
+        dt_utc = datetime.fromisoformat(mod_iso.replace("Z", "+00:00"))
+        dt_vn = dt_utc.astimezone(VN_TZ)
+        return dt_vn.strftime("%H:%M %d/%m/%Y")
+    except Exception as e:
+        print(f"⚠️ Lỗi đọc Google Drive input: {e}")
+        return ""
+
+
+def list_static_images():
+    if not os.path.exists(STATIC_DIR):
+        return []
+    files = []
+    for name in sorted(os.listdir(STATIC_DIR)):
+        full_path = os.path.join(STATIC_DIR, name)
+        if os.path.isfile(full_path) and name.lower().endswith(IMAGE_EXTS):
+            files.append(name)
+    return files
+
+
+def _validate_line_config(require_base_url: bool = True) -> bool:
+    if not LINE_CHANNEL_ACCESS_TOKEN:
+        print("❌ Thiếu LINE_CHANNEL_ACCESS_TOKEN")
+        return False
+
+    if require_base_url:
+        if not BASE_URL or not BASE_URL.startswith("https://") or "your-tunnel" in BASE_URL:
+            print("❌ Chưa cấu hình BASE_URL HTTPS thật")
+            return False
+
+    return True
+
+
+def _send_line_messages(target_id: str, messages: list, reply_token: str = "", label: str = ""):
+    """Ưu tiên dùng Reply API (tiết kiệm quota), fallback sang Push API nếu cần."""
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
+    }
+    suffix = f" ({label})" if label else ""
+
+    if reply_token:
+        resp = requests.post(
+            "https://api.line.me/v2/bot/message/reply",
+            headers=headers,
+            json={"replyToken": reply_token, "messages": messages},
+            timeout=30,
+        )
+        print(f"📡 LINE Reply API{suffix} status: {resp.status_code}")
+        if resp.status_code == 200:
+            return
+        print(f"⚠️ Reply API lỗi ({resp.text}), chuyển sang Push API...")
+
+    resp = requests.post(
+        "https://api.line.me/v2/bot/message/push",
+        headers=headers,
+        json={"to": target_id, "messages": messages},
+        timeout=30,
+    )
+    print(f"📡 LINE Push API{suffix} status: {resp.status_code} | response: {resp.text}")
+    resp.raise_for_status()
+
+
+def send_text_only(target_id: str, text_content: str, reply_token: str = "", label: str = "text"):
+    if not _validate_line_config(require_base_url=False):
+        return
+    _send_line_messages(
+        target_id,
+        [{"type": "text", "text": text_content[:4900]}],
+        reply_token=reply_token,
+        label=label,
+    )
+
+
+def send_single_image(
+    target_id: str,
+    filename: str,
+    title: str = "",
+    analysis_text: str = "",
+    reply_token: str = "",
+):
+    if not _validate_line_config(require_base_url=True):
+        return
+
+    input_time_str = get_latest_drive_input_time_vn()
+    ver = now_vn().strftime("%Y%m%d%H%M%S")
+    img_url = f"{BASE_URL}/static/{filename}?v={ver}"
+
+    heading = title or f"ẢNH: {filename}"
+    if input_time_str:
+        text_content = f"{heading}\nCập nhật input lúc: {input_time_str}\n\n{img_url}"
+    else:
+        text_content = f"{heading}\n(Xem mốc giờ realtime trực tiếp trên ảnh)\n\n{img_url}"
+
+    # Gộp phần phân tích vào chung tin nhắn đầu tiên
+    if analysis_text:
+        text_content = f"{text_content}\n\n{analysis_text}"
+
+    messages = [
+        {"type": "text", "text": text_content[:4900]},
+        {
+            "type": "image",
+            "originalContentUrl": img_url,
+            "previewImageUrl": img_url,
+        },
+    ]
+
+    _send_line_messages(target_id, messages, reply_token=reply_token, label=filename)
+
+
+def _load_cooldown_state() -> dict:
+    if not os.path.exists(COOLDOWN_FILE):
+        return {"cmd": {}, "user": {}}
+    try:
+        with open(COOLDOWN_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return {
+                    "cmd": data.get("cmd") if isinstance(data.get("cmd"), dict) else {},
+                    "user": data.get("user") if isinstance(data.get("user"), dict) else {},
+                }
+    except Exception as e:
+        print(f"⚠️ Lỗi đọc cooldown_state.json: {e}")
+    return {"cmd": {}, "user": {}}
+
+
+def _save_cooldown_state(state: dict):
+    try:
+        with open(COOLDOWN_FILE, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+    except Exception as e:
+        print(f"⚠️ Lỗi ghi cooldown_state.json: {e}")
+
+
+def check_and_mark_cooldown(target_id: str, user_id: str, cmd_clean: str) -> bool:
+    """Lưu trạng thái ra file để dùng chung giữa các worker/lần restart."""
+    now_ts = time.time()
+    state = _load_cooldown_state()
+
+    cmd_key = f"{target_id}::{cmd_clean}"
+    last_cmd_ts = float(state["cmd"].get(cmd_key, 0) or 0)
+    if now_ts - last_cmd_ts < CMD_COOLDOWN_SECONDS:
+        remain = int(CMD_COOLDOWN_SECONDS - (now_ts - last_cmd_ts))
+        print(f"⏳ Bỏ qua lệnh trùng '{cmd_clean}' tại {target_id} (còn {remain}s)")
+        return False
+
+    if user_id:
+        last_u_ts = float(state["user"].get(user_id, 0) or 0)
+        if now_ts - last_u_ts < USER_COOLDOWN_SECONDS:
+            remain = int(USER_COOLDOWN_SECONDS - (now_ts - last_u_ts))
+            print(f"⏳ Bỏ qua user '{user_id}' gọi quá nhanh (còn {remain}s)")
+            return False
+
+    state["cmd"][cmd_key] = now_ts
+    if user_id:
+        state["user"][user_id] = now_ts
+
+    # Dọn bớt các mục cũ quá 24 giờ cho file luôn gọn
+    cutoff = now_ts - 86400
+    state["cmd"] = {k: v for k, v in state["cmd"].items() if float(v or 0) >= cutoff}
+    state["user"] = {k: v for k, v in state["user"].items() if float(v or 0) >= cutoff}
+
+    _save_cooldown_state(state)
+    return True
+
+
+@app.route("/", methods=["GET"])
+def home():
+    return "Bot is running", 200
+
+
+@app.route("/static/<path:filename>")
+def serve_static(filename):
+    resp = send_from_directory(STATIC_DIR, filename)
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return resp
+
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    body = request.get_json(silent=True) or {}
+    events = body.get("events", [])
+    print(f"📩 Nhận {len(events)} event từ LINE")
+
+    for event in events:
+        if event.get("type") != "message":
+            continue
+
+        msg = event.get("message", {})
+        if msg.get("type") != "text":
+            continue
+
+        raw_text = (msg.get("text") or "").strip()
+        reply_token = event.get("replyToken", "")
+        source = event.get("source", {})
+        user_id = source.get("userId", "")
+        target_id = (
+            source.get("groupId")
+            or source.get("roomId")
+            or user_id
+        )
+
+        if not target_id:
+            continue
+
+        rt_target = resolve_github_target(raw_text)
+        if rt_target:
+            cmd_clean, repo_path, local_filename, title = rt_target
+
+            if not check_and_mark_cooldown(target_id, user_id, cmd_clean):
+                continue
+
+            print(f"🎯 Đồng bộ '{repo_path}' cho lệnh '{raw_text}' -> {target_id}")
+            local_path = sync_dashboard_from_github(repo_path, local_filename)
+            if local_path and os.path.exists(local_path):
+                summary_data = (
+                    fetch_github_json("summary.json")
+                    if cmd_clean == "rtkhuvuc"
+                    else get_store_summary_json(cmd_clean)
+                )
+                analysis_text = build_analysis_message(title, summary_data)
+                send_single_image(
+                    target_id,
+                    local_filename,
+                    title=title,
+                    analysis_text=analysis_text,
+                    reply_token=reply_token,
+                )
+            else:
+                send_text_only(
+                    target_id,
+                    f"⚠️ Không tìm thấy báo cáo '{raw_text}'. Vui lòng kiểm tra lại tên siêu thị.",
+                    reply_token=reply_token,
+                    label="not_found",
+                )
+
+        elif normalize_cmd(raw_text) in ["ds", "list", "danhsachanh"]:
+            if not check_and_mark_cooldown(target_id, user_id, "ds"):
+                continue
+            files = list_static_images()
+            if files:
+                ds_text = "📂 Danh sách ảnh đã tải về:\n" + "\n".join(f"- {f}" for f in files)
+            else:
+                ds_text = "📂 Hiện chưa có file ảnh nào trong bộ nhớ đệm."
+            send_text_only(target_id, ds_text, reply_token=reply_token, label="list")
+
+    return "OK", 200
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 5050))
+    print(f"🚀 Khởi động Flask tại http://0.0.0.0:{port} | BASE_URL={BASE_URL}")
+    app.run(host="0.0.0.0", port=port)

@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 import unicodedata
 from datetime import datetime, timezone, timedelta
 
@@ -44,6 +45,13 @@ GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").
 STATIC_DIR = os.environ.get("STATIC_DIR", os.path.join(os.path.dirname(__file__), "static")).strip()
 IMAGE_EXTS = (".jpg", ".jpeg", ".png", ".webp", ".gif")
 os.makedirs(STATIC_DIR, exist_ok=True)
+
+# Cấu hình chống spam / gọi trùng (giây)
+CMD_COOLDOWN_SECONDS = int(os.environ.get("CMD_COOLDOWN_SECONDS", "180"))   # 3 phút/lệnh/nhóm
+USER_COOLDOWN_SECONDS = int(os.environ.get("USER_COOLDOWN_SECONDS", "30"))  # 30 giây/người
+
+_last_cmd_sent = {}   # key: (target_id, cmd_clean) -> timestamp
+_last_user_sent = {}  # key: user_id -> timestamp
 
 # Ánh xạ tên không dấu (chuẩn hóa) -> TÊN VIẾT TẮT (27 siêu thị)
 STORE_NAMES = {
@@ -165,11 +173,11 @@ def get_store_summary_json(cmd_clean: str):
 
 
 def build_analysis_message(title: str, data: dict) -> str:
-    """Chuyển dữ liệu JSON tóm tắt thành phần nội dung phân tích ngắn gọn."""
+    """Chuyển dữ liệu JSON tóm tắt thành tin nhắn phân tích ngắn gọn, dễ đọc trên LINE."""
     if not isinstance(data, dict) or not data:
         return ""
 
-    lines = []
+    lines = [f"📊 PHÂN TÍCH DOANH THU - {title}"]
 
     if data.get("dt_ngay") or data.get("base") or data.get("ht_pct"):
         lines.append(
@@ -203,16 +211,12 @@ def build_analysis_message(title: str, data: dict) -> str:
     if data.get("nhan_dinh"):
         lines.append(f"💡 Nhận định: {data['nhan_dinh']}")
 
-    if not lines:
-        return ""
-
-    return f"📊 PHÂN TÍCH DOANH THU - {title}\n" + "\n".join(lines)
+    return "\n".join(lines) if len(lines) > 1 else ""
 
 
 def get_latest_drive_input_time_vn() -> str:
     """Lấy thời gian sửa đổi mới nhất (HH:MM DD/MM/YYYY, UTC+7) của file trong folder input trên Drive."""
     if not GOOGLE_SERVICE_ACCOUNT_JSON or not DRIVE_INPUT_FOLDER_ID:
-        print("ℹ️ Chưa cấu hình GOOGLE_SERVICE_ACCOUNT_JSON hoặc DRIVE_INPUT_FOLDER_ID")
         return ""
 
     try:
@@ -248,7 +252,6 @@ def get_latest_drive_input_time_vn() -> str:
 
         files = res.get("files", [])
         if not files:
-            print("⚠️ Folder input trên Google Drive không có file nào")
             return ""
 
         latest_file = files[0]
@@ -258,9 +261,7 @@ def get_latest_drive_input_time_vn() -> str:
 
         dt_utc = datetime.fromisoformat(mod_iso.replace("Z", "+00:00"))
         dt_vn = dt_utc.astimezone(VN_TZ)
-        formatted = dt_vn.strftime("%H:%M %d/%m/%Y")
-        print(f"📁 Drive input mới nhất: {latest_file.get('name')} -> {formatted}")
-        return formatted
+        return dt_vn.strftime("%H:%M %d/%m/%Y")
     except Exception as e:
         print(f"⚠️ Lỗi đọc Google Drive input: {e}")
         return ""
@@ -277,77 +278,6 @@ def list_static_images():
     return files
 
 
-def build_menu_flex_message():
-    """Tạo Flex Message menu chọn nhanh báo cáo."""
-    buttons = [
-        ("Báo Cáo Khu Vực", "rtkhuvuc"),
-        ("DS Ảnh Đã Tải", "ds"),
-        ("Ninh Diêm", "rtninhdiem"),
-        ("Vĩnh Hải", "rtvinhhai"),
-    ]
-
-    rows = []
-    for i in range(0, len(buttons), 2):
-        pair = buttons[i : i + 2]
-        cols = []
-        for label, cmd_val in pair:
-            cols.append({
-                "type": "button",
-                "style": "primary",
-                "color": "#0F766E",
-                "height": "sm",
-                "action": {
-                    "type": "postback",
-                    "label": label[:40],
-                    "data": cmd_val,
-                    "displayText": cmd_val,
-                },
-            })
-        rows.append({
-            "type": "box",
-            "layout": "horizontal",
-            "spacing": "sm",
-            "contents": cols,
-        })
-
-    return {
-        "type": "flex",
-        "altText": "Menu báo cáo AI Agent BHX",
-        "contents": {
-            "type": "bubble",
-            "header": {
-                "type": "box",
-                "layout": "vertical",
-                "backgroundColor": "#111827",
-                "paddingAll": "14px",
-                "contents": [
-                    {
-                        "type": "text",
-                        "text": "AI AGENT BHX — MENU NHANH",
-                        "color": "#FFFFFF",
-                        "weight": "bold",
-                        "size": "md",
-                    },
-                    {
-                        "type": "text",
-                        "text": "Bấm nút để xem báo cáo hoặc gõ rt<tên_siêu_thị>",
-                        "color": "#9CA3AF",
-                        "size": "xs",
-                        "margin": "xs",
-                    },
-                ],
-            },
-            "body": {
-                "type": "box",
-                "layout": "vertical",
-                "spacing": "sm",
-                "paddingAll": "14px",
-                "contents": rows,
-            },
-        },
-    }
-
-
 def _validate_line_config(require_base_url: bool = True) -> bool:
     if not LINE_CHANNEL_ACCESS_TOKEN:
         print("❌ Thiếu LINE_CHANNEL_ACCESS_TOKEN")
@@ -361,81 +291,73 @@ def _validate_line_config(require_base_url: bool = True) -> bool:
     return True
 
 
-def _push_line_messages(target_id: str, messages: list, label: str = ""):
+def _send_line_messages(target_id: str, messages: list, reply_token: str = "", label: str = ""):
+    """Ưu tiên dùng Reply API (tiết kiệm quota), fallback sang Push API nếu cần."""
     headers = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
     }
+    suffix = f" ({label})" if label else ""
 
-    payload = {
-        "to": target_id,
-        "messages": messages,
-    }
+    if reply_token:
+        resp = requests.post(
+            "https://api.line.me/v2/bot/message/reply",
+            headers=headers,
+            json={"replyToken": reply_token, "messages": messages},
+            timeout=30,
+        )
+        print(f"📡 LINE Reply API{suffix} status: {resp.status_code}")
+        if resp.status_code == 200:
+            return
+        print(f"⚠️ Reply API lỗi ({resp.text}), chuyển sang Push API...")
 
     resp = requests.post(
         "https://api.line.me/v2/bot/message/push",
         headers=headers,
-        json=payload,
+        json={"to": target_id, "messages": messages},
         timeout=30,
     )
-    suffix = f" ({label})" if label else ""
     print(f"📡 LINE Push API{suffix} status: {resp.status_code} | response: {resp.text}")
     resp.raise_for_status()
 
 
-def send_text_only(target_id: str, text_content: str, label: str = "text"):
+def send_text_only(target_id: str, text_content: str, reply_token: str = "", label: str = "text"):
     if not _validate_line_config(require_base_url=False):
         return
-    _push_line_messages(target_id, [{"type": "text", "text": text_content[:4900]}], label=label)
+    _send_line_messages(
+        target_id,
+        [{"type": "text", "text": text_content[:4900]}],
+        reply_token=reply_token,
+        label=label,
+    )
 
 
-def send_menu(target_id: str):
-    if not _validate_line_config(require_base_url=False):
-        return
-    _push_line_messages(target_id, [build_menu_flex_message()], label="menu")
-
-
-def build_combined_report_text(heading: str, input_time_str: str, img_url: str, analysis_text: str) -> str:
-    """Gộp phần đầu (tiêu đề, thời gian input, link ảnh) và phần phân tích vào 1 tin nhắn text."""
-    if input_time_str:
-        header_part = f"{heading}\nCập nhật input lúc: {input_time_str}\n\n{img_url}"
-    else:
-        header_part = f"{heading}\n(Xem mốc giờ realtime trực tiếp trên ảnh)\n\n{img_url}"
-
-    if analysis_text:
-        clean_analysis = analysis_text.strip()
-        lines = clean_analysis.splitlines()
-        if lines and lines[0].strip().lower() == f"📊 phân tích doanh thu - {heading}".lower():
-            clean_analysis = "\n".join(lines[1:]).strip()
-
-        if clean_analysis:
-            combined = f"{header_part}\n\n📊 PHÂN TÍCH DOANH THU\n{clean_analysis}"
-        else:
-            combined = header_part
-    else:
-        combined = header_part
-
-    return combined[:4900]
-
-
-def send_single_image(target_id: str, filename: str, title: str = "", analysis_text: str = ""):
+def send_single_image(
+    target_id: str,
+    filename: str,
+    title: str = "",
+    analysis_text: str = "",
+    reply_token: str = "",
+):
     if not _validate_line_config(require_base_url=True):
         return
 
     input_time_str = get_latest_drive_input_time_vn()
     ver = now_vn().strftime("%Y%m%d%H%M%S")
     img_url = f"{BASE_URL}/static/{filename}?v={ver}"
-    heading = title or f"ẢNH: {filename}"
 
-    combined_text = build_combined_report_text(
-        heading=heading,
-        input_time_str=input_time_str,
-        img_url=img_url,
-        analysis_text=analysis_text,
-    )
+    heading = title or f"ẢNH: {filename}"
+    if input_time_str:
+        text_content = f"{heading}\nCập nhật input lúc: {input_time_str}\n\n{img_url}"
+    else:
+        text_content = f"{heading}\n(Xem mốc giờ realtime trực tiếp trên ảnh)\n\n{img_url}"
+
+    # Gộp phần phân tích vào chung tin nhắn đầu tiên
+    if analysis_text:
+        text_content = f"{text_content}\n\n{analysis_text}"
 
     messages = [
-        {"type": "text", "text": combined_text},
+        {"type": "text", "text": text_content[:4900]},
         {
             "type": "image",
             "originalContentUrl": img_url,
@@ -443,51 +365,33 @@ def send_single_image(target_id: str, filename: str, title: str = "", analysis_t
         },
     ]
 
-    _push_line_messages(target_id, messages, label=filename)
+    _send_line_messages(target_id, messages, reply_token=reply_token, label=filename)
 
 
-def handle_command(target_id: str, raw_command_text: str):
-    """Xử lý chung cho cả tin nhắn text và nút bấm postback."""
-    cleaned_raw = (raw_command_text or "").strip()
-    norm = normalize_cmd(cleaned_raw)
+def check_and_mark_cooldown(target_id: str, user_id: str, cmd_clean: str) -> bool:
+    """Trả về True nếu được phép gửi; False nếu đang trong thời gian chờ chống trùng."""
+    now_ts = time.time()
 
-    if norm in ["menu", "help", "trogiup"]:
-        send_menu(target_id)
-        return
+    # 1. Chống trùng cùng 1 lệnh trong cùng nhóm/chat (mặc định 3 phút)
+    cmd_key = (target_id, cmd_clean)
+    last_cmd_ts = _last_cmd_sent.get(cmd_key, 0)
+    if now_ts - last_cmd_ts < CMD_COOLDOWN_SECONDS:
+        remain = int(CMD_COOLDOWN_SECONDS - (now_ts - last_cmd_ts))
+        print(f"⏳ Bỏ qua lệnh trùng '{cmd_clean}' tại {target_id} (còn {remain}s)")
+        return False
 
-    rt_target = resolve_github_target(cleaned_raw)
-    if rt_target:
-        cmd_clean, repo_path, local_filename, title = rt_target
-        print(f"🎯 Đồng bộ '{repo_path}' cho lệnh '{cleaned_raw}' -> {target_id}")
-        local_path = sync_dashboard_from_github(repo_path, local_filename)
-        if local_path and os.path.exists(local_path):
-            summary_data = (
-                fetch_github_json("summary.json")
-                if cmd_clean == "rtkhuvuc"
-                else get_store_summary_json(cmd_clean)
-            )
-            analysis_text = build_analysis_message(title, summary_data)
-            send_single_image(
-                target_id,
-                local_filename,
-                title=title,
-                analysis_text=analysis_text,
-            )
-        else:
-            send_text_only(
-                target_id,
-                f"⚠️ Không tìm thấy hoặc không tải được ảnh '{repo_path}' từ GitHub.",
-                label="not_found",
-            )
-        return
+    # 2. Chống 1 người bấm liên tục nhiều lệnh (mặc định 30 giây)
+    if user_id:
+        last_u_ts = _last_user_sent.get(user_id, 0)
+        if now_ts - last_u_ts < USER_COOLDOWN_SECONDS:
+            remain = int(USER_COOLDOWN_SECONDS - (now_ts - last_u_ts))
+            print(f"⏳ Bỏ qua user '{user_id}' gọi quá nhanh (còn {remain}s)")
+            return False
 
-    if norm in ["ds", "list", "danhsachanh"]:
-        files = list_static_images()
-        if files:
-            ds_text = "📂 Danh sách ảnh đã tải về:\n" + "\n".join(f"- {f}" for f in files)
-        else:
-            ds_text = "📂 Hiện chưa có file ảnh nào trong bộ nhớ đệm."
-        send_text_only(target_id, ds_text, label="list")
+    _last_cmd_sent[cmd_key] = now_ts
+    if user_id:
+        _last_user_sent[user_id] = now_ts
+    return True
 
 
 @app.route("/", methods=["GET"])
@@ -509,27 +413,67 @@ def webhook():
     print(f"📩 Nhận {len(events)} event từ LINE")
 
     for event in events:
-        event_type = event.get("type")
+        if event.get("type") != "message":
+            continue
+
+        msg = event.get("message", {})
+        if msg.get("type") != "text":
+            continue
+
+        raw_text = (msg.get("text") or "").strip()
+        reply_token = event.get("replyToken", "")
         source = event.get("source", {})
+        user_id = source.get("userId", "")
         target_id = (
             source.get("groupId")
             or source.get("roomId")
-            or source.get("userId")
+            or user_id
         )
+
         if not target_id:
             continue
 
-        if event_type == "message":
-            msg = event.get("message", {})
-            if msg.get("type") == "text":
-                raw_text = (msg.get("text") or "").strip()
-                print(f"💬 Tin nhắn nhận được: '{raw_text}'")
-                handle_command(target_id, raw_text)
+        rt_target = resolve_github_target(raw_text)
+        if rt_target:
+            cmd_clean, repo_path, local_filename, title = rt_target
 
-        elif event_type == "postback":
-            postback_data = (event.get("postback", {}).get("data") or "").strip()
-            print(f"🔘 Postback nhận được: '{postback_data}'")
-            handle_command(target_id, postback_data)
+            if not check_and_mark_cooldown(target_id, user_id, cmd_clean):
+                continue
+
+            print(f"🎯 Đồng bộ '{repo_path}' cho lệnh '{raw_text}' -> {target_id}")
+            local_path = sync_dashboard_from_github(repo_path, local_filename)
+            if local_path and os.path.exists(local_path):
+                summary_data = (
+                    fetch_github_json("summary.json")
+                    if cmd_clean == "rtkhuvuc"
+                    else get_store_summary_json(cmd_clean)
+                )
+                analysis_text = build_analysis_message(title, summary_data)
+                send_single_image(
+                    target_id,
+                    local_filename,
+                    title=title,
+                    analysis_text=analysis_text,
+                    reply_token=reply_token,
+                )
+            else:
+                # Chỉ báo lỗi khi không tải được ảnh
+                send_text_only(
+                    target_id,
+                    f"⚠️ Không tìm thấy báo cáo '{raw_text}'. Vui lòng kiểm tra lại tên siêu thị.",
+                    reply_token=reply_token,
+                    label="not_found",
+                )
+
+        elif normalize_cmd(raw_text) in ["ds", "list", "danhsachanh"]:
+            if not check_and_mark_cooldown(target_id, user_id, "ds"):
+                continue
+            files = list_static_images()
+            if files:
+                ds_text = "📂 Danh sách ảnh đã tải về:\n" + "\n".join(f"- {f}" for f in files)
+            else:
+                ds_text = "📂 Hiện chưa có file ảnh nào trong bộ nhớ đệm."
+            send_text_only(target_id, ds_text, reply_token=reply_token, label="list")
 
     return "OK", 200
 

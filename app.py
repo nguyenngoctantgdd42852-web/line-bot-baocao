@@ -39,7 +39,7 @@ REPO_OWNER = os.environ.get("GITHUB_REPO_OWNER", "nguyenngoctantgdd42852-web").s
 REPO_NAME = os.environ.get("GITHUB_REPO_NAME", "bhx-khu-vuc-dashboard").strip()
 REPO_BRANCH = os.environ.get("GITHUB_REPO_BRANCH", "main").strip()
 
-# Cấu hình bổ sung cho dashboard tháng
+# Cấu hình dashboard tháng
 MONTH_REPO_OWNER = os.environ.get("MONTH_GITHUB_OWNER", REPO_OWNER).strip()
 MONTH_REPO_NAME = os.environ.get("MONTH_GITHUB_REPO", "bhx-thang-dashboard").strip()
 MONTH_REPO_BRANCH = os.environ.get("MONTH_GITHUB_BRANCH", "main").strip()
@@ -101,7 +101,7 @@ def resolve_github_target(raw_text: str):
     if not cmd.startswith("rt"):
         return None
 
-    # Bổ sung lệnh báo cáo realtime tháng
+    # Lệnh báo cáo doanh thu tháng khu vực
     if cmd in {"rtthangkhuvuc", "rtthangkhuvucthang"}:
         return (
             "rtthangkhuvuc",
@@ -113,6 +113,7 @@ def resolve_github_target(raw_text: str):
             MONTH_REPO_BRANCH,
         )
 
+    # Lệnh báo cáo realtime ngày khu vực
     if cmd == "rtkhuvuc":
         return (
             cmd,
@@ -124,6 +125,7 @@ def resolve_github_target(raw_text: str):
             REPO_BRANCH,
         )
 
+    # Lệnh báo cáo realtime ngày theo từng siêu thị
     if len(cmd) > 2:
         store_key = normalize_cmd(cmd[2:])
         store_label = STORE_NAMES.get(store_key, store_key.upper())
@@ -213,18 +215,32 @@ def build_analysis_message(title: str, data: dict) -> str:
 
     lines = [f"📊 PHÂN TÍCH DOANH THU - {title}"]
 
-    # Hỗ trợ thêm metadata của báo cáo tháng (summary_thang.json)
-    if data.get("den_ngay") or data.get("ngay_luy_ke") or data.get("tong_ngay_thang"):
+    # --- ĐỊNH DẠNG CHO BÁO CÁO THÁNG ---
+    if data.get("dt_thang_du_kien"):
+        thang_ht = data.get("thang_hien_tai", "")
         lines.append(
             f"• Lũy kế đến: {data.get('den_ngay', '-')} ({data.get('ngay_luy_ke', '-')}/{data.get('tong_ngay_thang', '-')} ngày)"
         )
-    if data.get("store_count") or data.get("category_rows_count"):
-        lines.append(
-            f"• Quy mô: {data.get('store_count', '-')} siêu thị | {data.get('category_rows_count', '-')} dòng ngành hàng"
-        )
-    if data.get("updated_at_vn"):
-        lines.append(f"• Cập nhật báo cáo: {data['updated_at_vn']}")
+        lines.append(f"• Dự kiến T{thang_ht}: {data['dt_thang_du_kien']}")
+        if data.get("tang_truong_thang"):
+            lines.append(f"• So với tháng trước: {data['tang_truong_thang']}")
+        if data.get("chi_so_bq"):
+            lines.append(f"• Chỉ số BQ: {data['chi_so_bq']}")
+        if data.get("nhom_lon"):
+            lines.append(f"• Nhóm hàng: {data['nhom_lon']}")
+        if data.get("top_nganh_tang"):
+            lines.append(f"• Ngành tăng tốt: {data['top_nganh_tang']}")
+        if data.get("top_nganh_giam"):
+            lines.append(f"• Ngành giảm sâu: {data['top_nganh_giam']}")
+        if data.get("sieu_thi_tang"):
+            lines.append(f"• Siêu thị tăng: {data['sieu_thi_tang']}")
+        if data.get("sieu_thi_can_day"):
+            lines.append(f"• Siêu thị cần đẩy: {data['sieu_thi_can_day']}")
+        if data.get("nhan_dinh"):
+            lines.append(f"💡 Nhận định: {data['nhan_dinh']}")
+        return "\n".join(lines)
 
+    # --- ĐỊNH DẠNG CHO BÁO CÁO NGÀY ---
     if data.get("dt_ngay") or data.get("base") or data.get("ht_pct"):
         lines.append(
             f"• DT ngày: {data.get('dt_ngay', '-')} | Base: {data.get('base', '-')} ({data.get('ht_pct', '-')})"

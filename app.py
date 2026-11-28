@@ -39,11 +39,12 @@ REPO_OWNER = os.environ.get("GITHUB_REPO_OWNER", "nguyenngoctantgdd42852-web").s
 REPO_NAME = os.environ.get("GITHUB_REPO_NAME", "bhx-khu-vuc-dashboard").strip()
 REPO_BRANCH = os.environ.get("GITHUB_REPO_BRANCH", "main").strip()
 
-# Cấu hình dashboard tháng
+# Cấu hình dashboard tháng (ảnh khu vực, ảnh từng siêu thị trong stores/, summary_thang.json)
 MONTH_REPO_OWNER = os.environ.get("MONTH_GITHUB_OWNER", REPO_OWNER).strip()
 MONTH_REPO_NAME = os.environ.get("MONTH_GITHUB_REPO", "bhx-thang-dashboard").strip()
 MONTH_REPO_BRANCH = os.environ.get("MONTH_GITHUB_BRANCH", "main").strip()
 MONTH_IMAGE_REPO_PATH = os.environ.get("MONTH_IMAGE_PATH", "rtthangkhuvuc.png").strip().lstrip("/")
+MONTH_STORE_FOLDER = os.environ.get("MONTH_STORE_FOLDER", "stores").strip().strip("/") or "stores"
 MONTH_SUMMARY_REPO_PATH = os.environ.get("MONTH_SUMMARY_PATH", "summary_thang.json").strip().lstrip("/")
 
 DRIVE_INPUT_FOLDER_ID = "1yI_aUp9tLVnzw--2R6EqbYuUeCs5Vg_8"
@@ -88,6 +89,13 @@ STORE_NAMES = {
     "288d24": "288 Đ2/4",
 }
 
+STORE_ALIASES = {
+    "171duong24": "171d24",
+    "113duong24": "113d24",
+    "288duong24": "288d24",
+    "24ninhhoakhanhhoa": "24ninhhoa",
+}
+
 
 def normalize_cmd(text: str) -> str:
     s = (text or "").strip().lower().replace("đ", "d")
@@ -96,13 +104,25 @@ def normalize_cmd(text: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s)
 
 
+def resolve_store_key(raw_token: str) -> str:
+    k = normalize_cmd(raw_token)
+    if k in STORE_ALIASES:
+        return STORE_ALIASES[k]
+    if k in STORE_NAMES:
+        return k
+    for alias, canon in STORE_ALIASES.items():
+        if k == alias:
+            return canon
+    return k
+
+
 def resolve_github_target(raw_text: str):
     cmd = normalize_cmd(raw_text)
-    if not cmd.startswith("rt"):
+    if not cmd:
         return None
 
-    # Lệnh báo cáo doanh thu tháng khu vực
-    if cmd in {"rtthangkhuvuc", "rtthangkhuvucthang"}:
+    # 1. Lệnh báo cáo doanh thu tháng khu vực
+    if cmd in {"rtthangkhuvuc", "rtthangkhuvucthang", "rtthangkv", "rtthang"}:
         return (
             "rtthangkhuvuc",
             MONTH_IMAGE_REPO_PATH,
@@ -113,10 +133,29 @@ def resolve_github_target(raw_text: str):
             MONTH_REPO_BRANCH,
         )
 
-    # Lệnh báo cáo realtime ngày khu vực
-    if cmd == "rtkhuvuc":
+    # 2. Lệnh báo cáo doanh thu tháng theo từng siêu thị (vd: rtthangninhdiem, rthang171d24...)
+    for prefix in ("rtthang", "rthang"):
+        if cmd.startswith(prefix) and len(cmd) > len(prefix):
+            store_key = resolve_store_key(cmd[len(prefix):])
+            store_label = STORE_NAMES.get(store_key, store_key.upper())
+            filename = f"rtthang{store_key}.png"
+            return (
+                f"rtthang{store_key}",
+                f"{MONTH_STORE_FOLDER}/{filename}",
+                filename,
+                f"BÁO CÁO DOANH THU THÁNG SIÊU THỊ {store_label}",
+                MONTH_REPO_OWNER,
+                MONTH_REPO_NAME,
+                MONTH_REPO_BRANCH,
+            )
+
+    if not cmd.startswith("rt"):
+        return None
+
+    # 3. Lệnh báo cáo realtime ngày khu vực
+    if cmd in {"rtkhuvuc", "rtkv", "rtngaykhuvuc", "rtngaykv"}:
         return (
-            cmd,
+            "rtkhuvuc",
             "rtkhuvuc.png",
             "rtkhuvuc.png",
             "BÁO CÁO REALTIME KHU VỰC",
@@ -125,13 +164,15 @@ def resolve_github_target(raw_text: str):
             REPO_BRANCH,
         )
 
-    # Lệnh báo cáo realtime ngày theo từng siêu thị
+    # 4. Lệnh báo cáo realtime ngày theo từng siêu thị
     if len(cmd) > 2:
-        store_key = normalize_cmd(cmd[2:])
+        raw_store = cmd[4:] if cmd.startswith("rtngay") and len(cmd) > 6 else cmd[2:]
+        store_key = resolve_store_key(raw_store)
         store_label = STORE_NAMES.get(store_key, store_key.upper())
-        filename = f"{cmd}.png"
+        day_cmd = f"rt{store_key}"
+        filename = f"{day_cmd}.png"
         return (
-            cmd,
+            day_cmd,
             f"stores/{filename}",
             filename,
             f"BÁO CÁO REALTIME SIÊU THỊ {store_label}",
@@ -196,6 +237,25 @@ def fetch_github_json(
 
 
 def get_store_summary_json(cmd_clean: str):
+    if cmd_clean.startswith("rtthang"):
+        store_key = cmd_clean[len("rtthang"):]
+        candidates = [
+            f"{MONTH_STORE_FOLDER}/summary_{cmd_clean}.json",
+            f"{MONTH_STORE_FOLDER}/summary_{store_key}.json",
+            f"summary_{cmd_clean}.json",
+            f"summary_{store_key}.json",
+        ]
+        for path in candidates:
+            data = fetch_github_json(
+                path,
+                owner=MONTH_REPO_OWNER,
+                repo=MONTH_REPO_NAME,
+                branch=MONTH_REPO_BRANCH,
+            )
+            if isinstance(data, dict) and data:
+                return data
+        return None
+
     candidates = [f"stores/summary_{cmd_clean}.json"]
     if cmd_clean.startswith("rt") and len(cmd_clean) > 2:
         candidates.append(f"stores/summary_{cmd_clean[2:]}.json")

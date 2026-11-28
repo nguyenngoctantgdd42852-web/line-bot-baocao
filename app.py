@@ -39,6 +39,13 @@ REPO_OWNER = os.environ.get("GITHUB_REPO_OWNER", "nguyenngoctantgdd42852-web").s
 REPO_NAME = os.environ.get("GITHUB_REPO_NAME", "bhx-khu-vuc-dashboard").strip()
 REPO_BRANCH = os.environ.get("GITHUB_REPO_BRANCH", "main").strip()
 
+# Cấu hình bổ sung cho dashboard tháng
+MONTH_REPO_OWNER = os.environ.get("MONTH_GITHUB_OWNER", REPO_OWNER).strip()
+MONTH_REPO_NAME = os.environ.get("MONTH_GITHUB_REPO", "bhx-thang-dashboard").strip()
+MONTH_REPO_BRANCH = os.environ.get("MONTH_GITHUB_BRANCH", "main").strip()
+MONTH_IMAGE_REPO_PATH = os.environ.get("MONTH_IMAGE_PATH", "rtthangkhuvuc.png").strip().lstrip("/")
+MONTH_SUMMARY_REPO_PATH = os.environ.get("MONTH_SUMMARY_PATH", "summary_thang.json").strip().lstrip("/")
+
 DRIVE_INPUT_FOLDER_ID = "1yI_aUp9tLVnzw--2R6EqbYuUeCs5Vg_8"
 GOOGLE_SERVICE_ACCOUNT_JSON = os.environ.get("GOOGLE_SERVICE_ACCOUNT_JSON", "").strip()
 
@@ -94,20 +101,54 @@ def resolve_github_target(raw_text: str):
     if not cmd.startswith("rt"):
         return None
 
+    # Bổ sung lệnh báo cáo realtime tháng
+    if cmd in {"rtthangkhuvuc", "rtthangkhuvucthang"}:
+        return (
+            "rtthangkhuvuc",
+            MONTH_IMAGE_REPO_PATH,
+            "rtthangkhuvuc.png",
+            "BÁO CÁO DOANH THU THÁNG KHU VỰC",
+            MONTH_REPO_OWNER,
+            MONTH_REPO_NAME,
+            MONTH_REPO_BRANCH,
+        )
+
     if cmd == "rtkhuvuc":
-        return cmd, "rtkhuvuc.png", "rtkhuvuc.png", "BÁO CÁO REALTIME KHU VỰC"
+        return (
+            cmd,
+            "rtkhuvuc.png",
+            "rtkhuvuc.png",
+            "BÁO CÁO REALTIME KHU VỰC",
+            REPO_OWNER,
+            REPO_NAME,
+            REPO_BRANCH,
+        )
 
     if len(cmd) > 2:
         store_key = normalize_cmd(cmd[2:])
         store_label = STORE_NAMES.get(store_key, store_key.upper())
         filename = f"{cmd}.png"
-        return cmd, f"stores/{filename}", filename, f"BÁO CÁO REALTIME SIÊU THỊ {store_label}"
+        return (
+            cmd,
+            f"stores/{filename}",
+            filename,
+            f"BÁO CÁO REALTIME SIÊU THỊ {store_label}",
+            REPO_OWNER,
+            REPO_NAME,
+            REPO_BRANCH,
+        )
 
     return None
 
 
-def sync_dashboard_from_github(repo_path: str, local_filename: str):
-    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{repo_path}?ref={REPO_BRANCH}"
+def sync_dashboard_from_github(
+    repo_path: str,
+    local_filename: str,
+    owner: str = REPO_OWNER,
+    repo: str = REPO_NAME,
+    branch: str = REPO_BRANCH,
+):
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{repo_path}?ref={branch}"
     headers = {
         "Accept": "application/vnd.github.v3.raw",
         "X-GitHub-Api-Version": "2022-11-28",
@@ -122,14 +163,19 @@ def sync_dashboard_from_github(repo_path: str, local_filename: str):
             with open(local_path, "wb") as f:
                 f.write(resp.content)
             return local_path
-        print(f"⚠️ Tải GitHub thất bại ({repo_path}): HTTP {resp.status_code} - {resp.text[:200]}")
+        print(f"⚠️ Tải GitHub thất bại ({owner}/{repo}/{repo_path}): HTTP {resp.status_code} - {resp.text[:200]}")
     except Exception as e:
-        print(f"❌ Lỗi kết nối GitHub ({repo_path}): {e}")
+        print(f"❌ Lỗi kết nối GitHub ({owner}/{repo}/{repo_path}): {e}")
     return None
 
 
-def fetch_github_json(repo_path: str):
-    url = f"https://api.github.com/repos/{REPO_OWNER}/{REPO_NAME}/contents/{repo_path}?ref={REPO_BRANCH}"
+def fetch_github_json(
+    repo_path: str,
+    owner: str = REPO_OWNER,
+    repo: str = REPO_NAME,
+    branch: str = REPO_BRANCH,
+):
+    url = f"https://api.github.com/repos/{owner}/{repo}/contents/{repo_path}?ref={branch}"
     headers = {
         "Accept": "application/vnd.github.v3.raw",
         "X-GitHub-Api-Version": "2022-11-28",
@@ -141,9 +187,9 @@ def fetch_github_json(repo_path: str):
         resp = requests.get(url, headers=headers, timeout=15)
         if resp.status_code == 200 and resp.content:
             return resp.json()
-        print(f"ℹ️ Không tìm thấy hoặc không đọc được JSON ({repo_path}): HTTP {resp.status_code}")
+        print(f"ℹ️ Không tìm thấy hoặc không đọc được JSON ({owner}/{repo}/{repo_path}): HTTP {resp.status_code}")
     except Exception as e:
-        print(f"⚠️ Lỗi tải JSON ({repo_path}): {e}")
+        print(f"⚠️ Lỗi tải JSON ({owner}/{repo}/{repo_path}): {e}")
     return None
 
 
@@ -166,6 +212,18 @@ def build_analysis_message(title: str, data: dict) -> str:
         return ""
 
     lines = [f"📊 PHÂN TÍCH DOANH THU - {title}"]
+
+    # Hỗ trợ thêm metadata của báo cáo tháng (summary_thang.json)
+    if data.get("den_ngay") or data.get("ngay_luy_ke") or data.get("tong_ngay_thang"):
+        lines.append(
+            f"• Lũy kế đến: {data.get('den_ngay', '-')} ({data.get('ngay_luy_ke', '-')}/{data.get('tong_ngay_thang', '-')} ngày)"
+        )
+    if data.get("store_count") or data.get("category_rows_count"):
+        lines.append(
+            f"• Quy mô: {data.get('store_count', '-')} siêu thị | {data.get('category_rows_count', '-')} dòng ngành hàng"
+        )
+    if data.get("updated_at_vn"):
+        lines.append(f"• Cập nhật báo cáo: {data['updated_at_vn']}")
 
     if data.get("dt_ngay") or data.get("base") or data.get("ht_pct"):
         lines.append(
@@ -378,13 +436,12 @@ def _save_cmd_cooldowns(cmd_state: dict):
 
 def check_and_mark_cooldown(target_id: str, cmd_clean: str) -> bool:
     """
-    1. Trong CMD_COOLDOWN_SECONDS (180s = 3 phút): gọi lại đúng lệnh trùng tại cùng target_id -> trả về False (không phản hồi).
-    2. Sau 180s: gỡ bỏ trạng thái chặn của lệnh đó và đánh dấu lượt gọi mới -> trả về True (phản hồi lại).
+1. Trong CMD_COOLDOWN_SECONDS (180s = 3 phút): gọi lại đúng lệnh trùng tại cùng target_id -> trả về False (không phản hồi).
+2. Sau 180s: gỡ bỏ trạng thái chặn của lệnh đó và đánh dấu lượt gọi mới -> trả về True (phản hồi lại).
     """
     now_ts = time.time()
     cmd_state = _load_cmd_cooldowns()
 
-    # Dọn các lệnh đã hết hạn quá CMD_COOLDOWN_SECONDS để gỡ chặn sạch sẽ
     active_state = {
         k: float(ts)
         for k, ts in cmd_state.items()
@@ -398,7 +455,6 @@ def check_and_mark_cooldown(target_id: str, cmd_clean: str) -> bool:
         _save_cmd_cooldowns(active_state)
         return False
 
-    # Đã hết 3 phút (hoặc chưa từng gọi): gỡ chặn cũ và ghi nhận lượt gọi mới
     active_state[cmd_key] = now_ts
     _save_cmd_cooldowns(active_state)
     return True
@@ -445,19 +501,32 @@ def webhook():
 
         rt_target = resolve_github_target(raw_text)
         if rt_target:
-            cmd_clean, repo_path, local_filename, title = rt_target
+            cmd_clean, repo_path, local_filename, title, src_owner, src_repo, src_branch = rt_target
 
             if not check_and_mark_cooldown(target_id, cmd_clean):
                 continue
 
-            print(f"🎯 Đồng bộ '{repo_path}' cho lệnh '{raw_text}' -> {target_id}")
-            local_path = sync_dashboard_from_github(repo_path, local_filename)
+            print(f"🎯 Đồng bộ '{src_owner}/{src_repo}/{repo_path}' cho lệnh '{raw_text}' -> {target_id}")
+            local_path = sync_dashboard_from_github(
+                repo_path,
+                local_filename,
+                owner=src_owner,
+                repo=src_repo,
+                branch=src_branch,
+            )
             if local_path and os.path.exists(local_path):
-                summary_data = (
-                    fetch_github_json("summary.json")
-                    if cmd_clean == "rtkhuvuc"
-                    else get_store_summary_json(cmd_clean)
-                )
+                if cmd_clean == "rtthangkhuvuc":
+                    summary_data = fetch_github_json(
+                        MONTH_SUMMARY_REPO_PATH,
+                        owner=src_owner,
+                        repo=src_repo,
+                        branch=src_branch,
+                    )
+                elif cmd_clean == "rtkhuvuc":
+                    summary_data = fetch_github_json("summary.json")
+                else:
+                    summary_data = get_store_summary_json(cmd_clean)
+
                 analysis_text = build_analysis_message(title, summary_data)
                 send_single_image(
                     target_id,
@@ -469,7 +538,7 @@ def webhook():
             else:
                 send_text_only(
                     target_id,
-                    f"⚠️ Không tìm thấy báo cáo '{raw_text}'. Vui lòng kiểm tra lại tên siêu thị.",
+                    f"⚠️ Không tìm thấy báo cáo '{raw_text}'. Vui lòng kiểm tra lại tên siêu thị hoặc báo cáo.",
                     reply_token=reply_token,
                     label="not_found",
                 )
